@@ -1,0 +1,19 @@
+using UnityEngine;
+
+[CreateAssetMenu(fileName = "NewPerk", menuName = "ThirdCommercial/Perk")]
+public class PerkSO : ScriptableObject
+{
+    public string perkName;
+    [TextArea] public string description;
+    public Sprite icon;
+
+    public enum PerkType { Movement, Combat, Survival }
+    public PerkType category;
+
+    // Stat Modifiers
+    public float moveSpeedAdd;
+    public float jumpForceAdd;
+    public float diveCooldownMult = 1f; // 0.8 = 20% faster
+    public float damageMult = 1f;
+    public float healthRegenOnKill;
+}

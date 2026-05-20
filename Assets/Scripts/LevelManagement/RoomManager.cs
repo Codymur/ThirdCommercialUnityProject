@@ -1,0 +1,309 @@
+using System.Collections;
+using UnityEngine;
+using Unity.AI.Navigation;
+
+public class RoomManager : MonoBehaviour
+{
+    public static RoomManager Instance { get; private set; }
+
+    [Header("Room Prefabs")]
+    public GameObject[] normalRoomPrefabs;
+    public GameObject[] miniBossRoomPrefabs;
+    public GameObject[] perkRoomPrefabs;
+    public GameObject bossRoomPrefab;
+
+    [Header("First Room")]
+    public Transform firstRoomExitAnchor;
+
+    // One full cycle = 4 normal + 1 mini-boss + 1 perk.
+    private const int RoomSlots = 6;
+
+    private readonly Room[] rooms = new Room[RoomSlots];
+    private readonly GameObject[] roomInstances = new GameObject[RoomSlots];
+
+    // How many rooms at the front of the array have already been cleared and the
+    // player has moved past. Their instances are stashed here until the player
+    // physically enters the next room (handled by RoomEnteredTrigger).
+    private GameObject pendingDestroyInstance;
+    private int pendingDestroySlot = -1;
+
+    // Index into rooms[] pointing at the room the player is currently in.
+    private int activeSlot = 0;
+
+    void Awake()
+    {
+        if (Instance != null && Instance != this) { Destroy(gameObject); return; }
+        Instance = this;
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Public API
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /// <summary>Instantiates the first 6 rooms and bakes their NavMeshes.</summary>
+    public void LoadFirstBatch()
+    {
+        StartCoroutine(LoadBatchRoutine(startSlot: 0, tailRoom: null));
+    }
+
+    /// <summary>
+    /// Called by PerkPickup after the player picks a perk.
+    /// Destroys all rooms in the current batch (except ones still in use) and
+    /// instantiates the next full batch of 6.
+    /// </summary>
+    public void LoadNextBatch()
+    {
+        StartCoroutine(LoadNextBatchRoutine());
+    }
+
+    /// <summary>
+    /// Called by RunManager when the player exits a non-perk room.
+    /// Stashes the just-exited room for deferred destruction and wakes the
+    /// enemies in the room the player is now entering.
+    /// </summary>
+    public void ShiftRoom()
+    {
+        // activeSlot was already incremented by HandlePlayerExited before
+        // AdvanceRoom→ShiftRoom is called, so activeSlot-1 is the exited room.
+        int exitedSlot = activeSlot - 1;
+        if (exitedSlot >= 0 && exitedSlot < RoomSlots)
+        {
+            pendingDestroyInstance = roomInstances[exitedSlot];
+            pendingDestroySlot = exitedSlot;
+        }
+    }
+
+    /// <summary>
+    /// Destroys the previous room instance. Called by RoomEnteredTrigger once
+    /// the player has physically stepped into the next room.
+    /// Deferred by one frame and guarded by slot index to guarantee the player
+    /// has fully cleared the boundary before the old room is torn down.
+    /// </summary>
+    public void DestroyPreviousRoom()
+    {
+        if (pendingDestroyInstance == null) return;
+
+        // Safety: never destroy the room the player is currently inside.
+        if (pendingDestroySlot >= activeSlot)
+        {
+            Debug.LogWarning($"[RoomManager] DestroyPreviousRoom blocked — pending slot {pendingDestroySlot} is not behind active slot {activeSlot}.");
+            return;
+        }
+
+        StartCoroutine(DestroyPreviousRoomRoutine(pendingDestroyInstance));
+        pendingDestroyInstance = null;
+        pendingDestroySlot = -1;
+    }
+
+    IEnumerator DestroyPreviousRoomRoutine(GameObject instance)
+    {
+        yield return null; // Wait one frame so the player is fully inside the new room.
+        if (instance != null)
+        {
+            Debug.Log($"[RoomManager] Destroying previous room '{instance.name}'.");
+            Destroy(instance);
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Startup batch
+    // ──────────────────────────────────────────────────────────────────────────
+
+    IEnumerator LoadBatchRoutine(int startSlot, Room tailRoom)
+    {
+        for (int i = startSlot; i < RoomSlots; i++)
+        {
+            int absoluteIndex = RunManager.Instance.CurrentRoomIndex + i;
+            RoomType type = RunManager.Instance.GetRoomType(absoluteIndex);
+            GameObject prefab = PickPrefab(type);
+            if (prefab == null)
+            {
+                Debug.LogError($"[RoomManager] No prefab for slot {i} (type: {type}).");
+                yield break;
+            }
+
+            roomInstances[i] = Instantiate(prefab, Vector3.zero, Quaternion.identity);
+            rooms[i] = roomInstances[i].GetComponent<Room>();
+        }
+
+        // Align slot 0 to firstRoomExitAnchor (or to the provided tail room).
+        if (tailRoom == null)
+        {
+            if (firstRoomExitAnchor != null && rooms[0] != null && rooms[0].entranceAnchor != null)
+            {
+                Quaternion rotOffset = firstRoomExitAnchor.rotation
+                    * Quaternion.Inverse(rooms[0].entranceAnchor.rotation);
+                rooms[0].transform.rotation = rotOffset * rooms[0].transform.rotation;
+                rooms[0].transform.position += firstRoomExitAnchor.position
+                    - rooms[0].entranceAnchor.position;
+            }
+            // Chain-align the rest.
+            for (int i = 1; i < RoomSlots; i++)
+                AlignRooms(rooms[i - 1], rooms[i]);
+        }
+        else
+        {
+            // New batch: align first new room to the tail of the previous batch.
+            AlignRooms(tailRoom, rooms[startSlot]);
+            for (int i = startSlot + 1; i < RoomSlots; i++)
+                AlignRooms(rooms[i - 1], rooms[i]);
+        }
+
+        // Bake all NavMeshes.
+        for (int i = startSlot; i < RoomSlots; i++)
+        {
+            NavMeshSurface surface = roomInstances[i]?.GetComponentInChildren<NavMeshSurface>();
+            if (surface != null)
+            {
+                surface.BuildNavMesh();
+                yield return null;
+            }
+        }
+
+        // Initialise: slot 0 activates immediately; the rest spawn dormant.
+        InitialiseRoom(0, autoActivate: true);
+        for (int i = 1; i < RoomSlots; i++)
+            InitialiseRoom(i, autoActivate: false);
+
+        activeSlot = 0;
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Next-batch load (triggered by perk pickup)
+    // ──────────────────────────────────────────────────────────────────────────
+
+    IEnumerator LoadNextBatchRoutine()
+    {
+        // Stash the perk room — it stays in the scene until the player physically
+        // crosses into the first room of the new batch.
+        int perkSlot = RoomSlots - 1;
+        Room perkRoom = rooms[perkSlot];
+        GameObject perkRoomInstance = roomInstances[perkSlot];
+
+        // Remove it from the tracked arrays but do NOT destroy it yet.
+        rooms[perkSlot] = null;
+        roomInstances[perkSlot] = null;
+
+        // Destroy rooms 0–4 (already passed through) and any stale pending instance.
+        for (int i = 0; i < perkSlot; i++)
+        {
+            if (roomInstances[i] != null)
+            {
+                Destroy(roomInstances[i]);
+                roomInstances[i] = null;
+                rooms[i] = null;
+            }
+        }
+        if (pendingDestroyInstance != null)
+        {
+            Destroy(pendingDestroyInstance);
+            pendingDestroyInstance = null;
+            pendingDestroySlot = -1;
+        }
+
+        yield return null; // Let Unity process the Destroys.
+
+        // Advance the room index past the perk room so GetRoomType resolves
+        // correctly for the new cycle (slot 0 → absoluteIndex 6 → Normal, etc.).
+        RunManager.Instance.AdvancePastPerkRoom();
+
+        // Build and align the new batch, chaining off the perk room's exitAnchor.
+        yield return StartCoroutine(LoadBatchRoutine(startSlot: 0, tailRoom: perkRoom));
+
+        // Hand the perk room to the deferred-destroy pipeline.
+        // It will be torn down by RoomEnteredTrigger of the new batch's first room
+        // once the player physically walks through. pendingDestroySlot = -1 always
+        // passes the slot guard (activeSlot resets to 0 after LoadBatchRoutine).
+        pendingDestroyInstance = perkRoomInstance;
+        pendingDestroySlot = -1;
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Room cleared
+    // ──────────────────────────────────────────────────────────────────────────
+
+    void HandleRoomCleared(int slotIndex)
+    {
+        // For normal/mini-boss rooms the exit door is opened directly by Room itself.
+        // Wake enemies in the next slot so they are ready when the player arrives.
+        int nextSlot = slotIndex + 1;
+        if (nextSlot < RoomSlots && rooms[nextSlot] != null)
+            rooms[nextSlot].WakeEnemies();
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Player exited a room
+    // ──────────────────────────────────────────────────────────────────────────
+
+    void HandlePlayerExited(int slotIndex)
+    {
+        // Guard against stale subscriptions firing from a room the player
+        // already passed through.
+        if (slotIndex != activeSlot)
+        {
+            Debug.LogWarning($"[RoomManager] Stale OnPlayerExited from slot {slotIndex} (active slot is {activeSlot}). Ignored.");
+            return;
+        }
+
+        activeSlot++;
+        RunManager.Instance.AdvanceRoom();
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Helpers
+    // ──────────────────────────────────────────────────────────────────────────
+
+    void InitialiseRoom(int slotIndex, bool autoActivate)
+    {
+        Room room = rooms[slotIndex];
+        if (room == null) return;
+
+        int absoluteIndex = RunManager.Instance.CurrentRoomIndex + slotIndex;
+        room.autoActivateOnSpawn = autoActivate;
+        room.Initialise(
+            RunManager.Instance.GetRoomType(absoluteIndex),
+            RunManager.Instance.GetDifficulty(absoluteIndex)
+        );
+
+        // Capture slotIndex so each room's exit fires with the correct slot,
+        // preventing stale subscriptions from interfering.
+        int capturedSlot = slotIndex;
+        room.OnPlayerExited += () => HandlePlayerExited(capturedSlot);
+
+        // Cascade: wake next room's enemies when this room is cleared.
+        if (slotIndex < RoomSlots - 1)
+            room.OnRoomCleared += () => HandleRoomCleared(slotIndex);
+    }
+
+    void AlignRooms(Room current, Room next)
+    {
+        if (current == null || next == null) return;
+        if (current.exitAnchor == null || next.entranceAnchor == null)
+        {
+            Debug.LogError($"[RoomManager] AlignRooms: missing anchor on '{current.name}' or '{next.name}'.");
+            return;
+        }
+
+        Quaternion rotOffset = current.exitAnchor.rotation
+            * Quaternion.Inverse(next.entranceAnchor.rotation);
+        next.transform.rotation = rotOffset * next.transform.rotation;
+        next.transform.position += current.exitAnchor.position - next.entranceAnchor.position;
+    }
+
+    GameObject PickPrefab(RoomType type)
+    {
+        return type switch
+        {
+            RoomType.Boss => bossRoomPrefab,
+            RoomType.MiniBoss => miniBossRoomPrefabs.Length > 0
+                ? miniBossRoomPrefabs[Random.Range(0, miniBossRoomPrefabs.Length)]
+                : null,
+            RoomType.Perk => perkRoomPrefabs.Length > 0
+                ? perkRoomPrefabs[Random.Range(0, perkRoomPrefabs.Length)]
+                : null,
+            _ => normalRoomPrefabs.Length > 0
+                ? normalRoomPrefabs[Random.Range(0, normalRoomPrefabs.Length)]
+                : null,
+        };
+    }
+}

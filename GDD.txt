@@ -1,0 +1,62 @@
+Genre & Core Concept
+ThirdCommercial is a first-person, room-based rogue-lite shooter with an emphasis on high-mobility, movement-centric combat. The core loop is: clear a room of enemies, grab a perk, advance to the next room — with difficulty scaling as you progress.
+
+Player Systems
+The player is a Rigidbody-based character with a tight, fast-feeling movement kit:
+
+Player_Container
+├── Player              # Rigidbody, movement, health, kick
+│   ├── PlayerMovementTutorial  # MoveSpeed: 7, JumpForce: 15
+│   ├── PlayerDive              # Shift key — forward burst
+│   ├── KickSystem              # F key — melee
+│   └── PlayerHealth            # MaxHealth: 100, current: 50
+├── Camera              # Mouse-look, FOV kicks, recoil
+└── Hands               # Dual weapon models (Left/Right hand)
+Mobility:
+
+Dive (Left Shift) — applies a strong forward + slight upward impulse (DiveForwardImpulse: 25, DiveUpImpulse: 15), shrinks the collider, and boosts FOV for a speed-rush feel. 1.2s cooldown shown on a DiveSlider UI element.
+Jump — standard Rigidbody jump with a short cooldown and reduced air control (AirMultiplier: 0.4).
+Combat:
+
+Dual Wielding — GunController distinguishes left and right mouse buttons for each hand independently.
+Kick (F) — 2.5-unit raycast that deals 100 damage and applies a physics force of 20 to hit targets. It pulls the weapon hands back and plays a foot model animation via DOTween. 0.8s cooldown.
+Procedural Feel — WeaponRecoil, CameraRecoil, GunBreath, Sway, and GunWallAvoidance scripts add juice to every action.
+Weapons
+Two starting weapons visible in the scene — a Glock17 and an Uzi — sitting in /Pickables. The ItemPickupManager handles equipping and swapping. ShooterEnemy also carries a Glock17 model.
+
+Enemy Types
+Enemy	Behavior	Notes
+ShooterEnemy	Strafes laterally, fires in bursts	Ranged, uses BulletPoint for shots
+RusherEnemy	Charges the player directly	Melee, tankier health pool
+Both share EnemyBase — a NavMesh-driven state machine cycling through Idle → Alert → Attack. On death, they go ragdoll-like via physics forces.
+
+Level Structure & Game Loop
+Rooms are pre-built prefabs (Level01 – Level07) assembled at runtime by RoomManager, which dynamically bakes NavMesh as rooms load.
+
+Level Prefab (e.g., Level03)
+├── LevelModel          # Room geometry
+├── PlayerSpawnPoint    # Entry point
+├── EnemySpawns         # Spawn01, Spawn02, ...
+├── Probs               # Decorative props (lamps, tables, monitors)
+├── ExitDoor            # Locked until room is cleared
+└── ExitAnchor          # Snap point for the next room
+Run Loop:
+
+RunManager tracks current room index and determines room type: Normal → MiniBoss → Boss.
+Room.cs spawns enemies scaled to CurrentRoomIndex + 1 difficulty.
+Killing all enemies unlocks the exit door and grants a Perk.
+Player steps through PassageTrigger → next room loads and aligns to the ExitAnchor.
+Death restarts the scene (no persistent save state visible yet).
+UI
+The Canvas contains three elements:
+
+Health display
+Crosshair
+DiveSlider — visual cooldown indicator for the dive ability
+Technical Stack
+Unity 6000.0, URP, 3D renderer
+Rigidbody-based physics movement (no CharacterController)
+NavMeshAgent for enemy pathfinding with runtime baking
+DOTween for animations (kick system, pickups)
+Raycast-based hitscan shooting (no projectile physics)
+The project is in an active prototype stage — the player's health is set to 50/100 in the test scene, there's a tutorial scene alongside the level test, and enemy models are still placeholder cubes.

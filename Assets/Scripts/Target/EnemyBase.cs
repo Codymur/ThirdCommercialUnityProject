@@ -1,0 +1,139 @@
+using UnityEngine;
+using System;
+using System.Collections.Generic;
+using UnityEngine.AI;
+
+/// <summary>
+/// Inherits Target (health + damage flash).
+/// Adds: NavMeshAgent control, death physics, ragdoll hook.
+/// ShooterEnemy and RusherEnemy both inherit from this.
+/// </summary>
+[RequireComponent(typeof(NavMeshAgent))]
+[RequireComponent(typeof(Rigidbody))]
+[RequireComponent(typeof(CapsuleCollider))]
+public class EnemyBase : Target
+{
+    [Header("Detection")]
+    public float detectionRange = 15f;
+    public float losePlayerRange = 20f;
+
+    [Header("References")]
+    public Transform player;              // Assign in Inspector or auto-found in Start
+
+    // ?? Internal refs ??????????????????????????????????????????????
+    protected NavMeshAgent agent;
+    protected Rigidbody rb;
+    protected CapsuleCollider col;
+    protected bool isDead = false;
+    protected bool isActivated = false;
+
+    public event Action<EnemyBase> OnDeath;
+
+    // ?? State ??????????????????????????????????????????????????????
+    public enum EnemyState { Idle, Alert, Attack }
+    protected EnemyState state = EnemyState.Idle;
+
+    // ?? Events � hook score system / perk triggers later ???????????
+    public System.Action<EnemyBase> OnEnemyDeath;
+
+    // ??????????????????????????????????????????????????????????????
+    protected override void Awake()
+    {
+        base.Awake(); // runs Target.Awake() � saves renderer materials
+
+        agent = GetComponent<NavMeshAgent>();
+        rb = GetComponent<Rigidbody>();
+        col = GetComponent<CapsuleCollider>();
+
+        rb.isKinematic = true; // NavMeshAgent drives movement while alive
+    }
+
+    protected virtual void Start()
+    {
+        // Auto-find player if not assigned
+        if (player == null)
+        {
+            player = PlayerMainChecking.Instance;
+        }
+    }
+
+    // ??????????????????????????????????????????????????????????????
+    protected virtual void Update()
+    {
+        if (!isActivated || isDead || player == null) return;
+
+        float distToPlayer = Vector3.Distance(transform.position, player.position);
+
+        switch (state)
+        {
+            case EnemyState.Idle:
+                if (distToPlayer <= detectionRange)
+                    state = EnemyState.Alert;
+                break;
+
+            case EnemyState.Alert:
+                if (distToPlayer > losePlayerRange)
+                    state = EnemyState.Idle;
+                break;
+
+            case EnemyState.Attack:
+                if (distToPlayer > losePlayerRange)
+                    state = EnemyState.Idle;
+                break;
+        }
+    }
+
+    // ??????????????????????????????????????????????????????????????
+    protected override void Die(Vector3 hitDirection)
+    {
+        if (isDead) return;
+        isDead = true;
+
+        OnEnemyDeath?.Invoke(this);
+
+        OnDeath?.Invoke(this);
+
+        agent.enabled = false;
+        col.enabled = false;
+
+        // ?? RAGDOLL HOOK ??????????????????????????????????????????
+        // When you have a rigged model:
+        //   1. Enable all Rigidbodies in the rig
+        //   2. Disable the Animator
+        //   3. Apply hitDirection force to the nearest bone
+        //   Replace PlaceholderDeathPhysics() with EnableRagdoll()
+        // ?????????????????????????????????????????????????????????
+        PlaceholderDeathPhysics(hitDirection);
+
+        Destroy(gameObject, deathFlashTime + 3f);
+    }
+
+    void PlaceholderDeathPhysics(Vector3 hitDirection)
+    {
+        rb.isKinematic = false;
+        rb.constraints = RigidbodyConstraints.None;
+
+        Vector3 force = hitDirection == Vector3.zero
+            ? (Vector3.back + Vector3.up) * deathForce
+            : hitDirection.normalized * deathForce + Vector3.up * deathUpwardForce;
+
+        rb.AddForce(force, ForceMode.Impulse);
+        rb.AddTorque(UnityEngine.Random.insideUnitSphere * 2f, ForceMode.Impulse);
+    }
+
+    // ?? Future ragdoll method ??????????????????????????????????????
+    // void EnableRagdoll(Vector3 hitDirection)
+    // {
+    //     GetComponent<Animator>().enabled = false;
+    //     foreach (Rigidbody bone in GetComponentsInChildren<Rigidbody>())
+    //     {
+    //         bone.isKinematic = false;
+    //         bone.AddForce(hitDirection.normalized * deathForce, ForceMode.Impulse);
+    //     }
+    // }
+
+    public bool IsDead => isDead;
+
+    /// <summary>Activates this enemy's AI, allowing the state machine to run.</summary>
+    public void Activate() { isActivated = true; }
+}
