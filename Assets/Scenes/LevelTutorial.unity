@@ -2473,8 +2473,10 @@ MonoBehaviour:
   - {fileID: 8558150613049551436, guid: aa0fe92bc25db9c4eadb443f020b8972, type: 3}
   miniBossRoomPrefabs:
   - {fileID: 8558150613049551436, guid: a5e847128639261438fda85bf1fcb5cb, type: 3}
+  perkRoomPrefabs: []
   bossRoomPrefab: {fileID: 0}
   firstRoomExitAnchor: {fileID: 1783926244}
+  doorLingerDuration: 3
 --- !u!114 &584639974
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -2487,8 +2489,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 29bf19acd2f1cc142a40dc41b9a09c38, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  miniBossEveryNRooms: 5
-  totalNormalRooms: 15
 --- !u!4 &584639975
 Transform:
   m_ObjectHideFlags: 0
